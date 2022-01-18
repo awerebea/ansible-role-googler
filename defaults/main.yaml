@@ -1,0 +1,8 @@
+---
+googler_prefix_dir: /usr/local
+googler_download_dir: /tmp
+# googler_bash_completions_dir: /path
+# googler_zsh_completions_dir: /path
+# googler_fish_completions_dir: /path
+# googler_at_aliases_dir: /path
+googler_env_files_to_modify: []
