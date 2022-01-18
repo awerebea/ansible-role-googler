@@ -1,0 +1,177 @@
+---
+# Install Googler
+
+- name: Check Googler version.
+  shell: >
+    set -o pipefail && {{ googler_prefix_dir }}/bin/googler --version |
+    grep -Eo "[0-9]{1,}(\.[0-9]{1,}){0,}" | head -n1
+  args:
+    executable: /usr/bin/bash
+  changed_when: false
+  failed_when: false
+  register: googler_curr_ver
+
+- name: Filter current version stdout.
+  set_fact:
+    googler_current_ver: '{{ googler_curr_ver.stdout |
+    regex_search("[0-9]{1,}(\.[0-9]{1,}){0,2}") }}'
+  when: googler_curr_ver.rc == 0
+
+- name: Filter desired Googler version.
+  set_fact:
+    googler_desired_ver: '{{ googler_version |
+    regex_search("[0-9]{1,}(\.[0-9]{1,}){0,2}") }}'
+  when: googler_version is defined
+
+- name: Basic tasks.
+  block:
+    - name: Create missing directories.
+      block:
+        - name: Get status of directories.
+          stat:
+            path: '{{ item }}'
+          register: googler_dirstatus
+          with_items:
+            - '{{ googler_download_dir }}'
+            - '{{ googler_prefix_dir }}/bin'
+            - '{{ googler_prefix_dir }}/share/man/man1'
+            - '{{ googler_prefix_dir }}/share/doc'
+            - '{{ googler_bash_completions_dir | default("") }}'
+            - '{{ googler_fish_completions_dir | default("") }}'
+            - '{{ googler_zsh_completions_dir | default("") }}'
+            - '{{ googler_at_aliases_dir | default("") }}'
+
+        - name: Create directories in a loop.
+          include_tasks: create-dir.yaml
+          vars:
+            dir_path: '{{ item.item }}'
+          with_items: '{{ googler_dirstatus.results }}'
+          when: not item.stat.exists and not item.item == ''
+
+    - name: Update status of directories.
+      stat:
+        path: '{{ item }}'
+      register: googler_dirstatus
+      with_items:
+        - '{{ googler_download_dir }}'
+        - '{{ googler_prefix_dir }}/bin'
+        - '{{ googler_prefix_dir }}/share/man/man1'
+        - '{{ googler_prefix_dir }}/share/doc'
+        - '{{ googler_bash_completions_dir | default("") }}'
+        - '{{ googler_fish_completions_dir | default("") }}'
+        - '{{ googler_zsh_completions_dir | default("") }}'
+        - '{{ googler_at_aliases_dir | default("") }}'
+
+    - name: Determine latest release number.
+      block:
+        - name: Ensure pip3 is installed.
+          apt:
+            name: python3-pip
+            state: present
+          become: true
+
+        - name: Ensure required python module is installed.
+          pip:
+            name: github3.py
+
+        - name: Get the latest release tag.
+          community.general.github_release:
+            user: jarun
+            repo: googler
+            action: latest_release
+          register: googler_latest_release
+
+        - name: Filter release number.
+          set_fact:
+            googler_latest_release_tag: '{{ googler_latest_release.tag |
+            regex_search("([0-9]{1,}\.)+[0-9]{1,}") }}'
+
+      when: googler_version is not defined
+
+    - name: Define release number.
+      set_fact:
+        googler_release_number: "{{ googler_desired_ver
+        if (googler_desired_ver is defined) else googler_latest_release_tag }}"
+
+    - name: Download and extract the archive.
+      unarchive:
+        src: "https://github.com/jarun/googler/archive/refs/tags/\
+        v{{ googler_release_number }}.tar.gz"
+        dest: '{{ googler_download_dir }}'
+        remote_src: true
+        mode: 0755
+      become: '{{ not googler_dirstatus.results[0].stat.writeable }}'
+
+    - name: Install using make.
+      shell: >
+        cd {{ googler_download_dir }}/googler-{{ googler_release_number }} &&
+        PREFIX={{ googler_prefix_dir }} make install
+      args:
+        executable: /usr/bin/bash
+      become: >-
+        {{ not (googler_dirstatus.results[1].stat.writeable
+        and googler_dirstatus.results[2].stat.writeable
+        and googler_dirstatus.results[3].stat.writeable) }}
+
+    - name: Copy the Bash completions script.
+      copy:
+        src: "{{ googler_download_dir }}/googler-{{ googler_release_number }}/\
+        auto-completion/bash/googler-completion.bash"
+        dest: '{{ googler_bash_completions_dir }}/'
+        mode: 0644
+        remote_src: true
+      become: '{{ not googler_dirstatus.results[4].stat.writeable }}'
+      when: googler_bash_completions_dir is defined
+
+    - name: Copy the Fish completions script.
+      copy:
+        src: "{{ googler_download_dir }}/googler-{{ googler_release_number }}/\
+        auto-completion/fish/googler.fish"
+        dest: '{{ googler_fish_completions_dir }}/'
+        mode: 0644
+        remote_src: true
+      become: '{{ not googler_dirstatus.results[5].stat.writeable }}'
+      when: googler_fish_completions_dir is defined
+
+    - name: Copy the Zsh completions script.
+      copy:
+        src: "{{ googler_download_dir }}/googler-{{ googler_release_number }}/\
+        auto-completion/zsh/_googler"
+        dest: '{{ googler_zsh_completions_dir }}/'
+        mode: 0644
+        remote_src: true
+      become: '{{ not googler_dirstatus.results[6].stat.writeable }}'
+      when: googler_zsh_completions_dir is defined
+
+    - name: Copy the Googler @t aliases.
+      copy:
+        src: "{{ googler_download_dir }}/googler-{{ googler_release_number }}/\
+        auto-completion/googler_at/googler_at"
+        dest: '{{ googler_at_aliases_dir }}/'
+        mode: 0644
+        remote_src: true
+      become: '{{ not googler_dirstatus.results[7].stat.writeable }}'
+      when: googler_at_aliases_dir is defined
+
+    - name: Ensure the bin dir is in the system PATH.
+      lineinfile:
+        dest: '{{ item }}'
+        line: '[[ ":$PATH:" != *":{{ googler_prefix_dir }}/bin:"* ]] &&
+        export PATH="$PATH:{{ googler_prefix_dir }}/bin"'
+        state: present
+        backup: false
+      with_items: '{{ googler_env_files_to_modify }}'
+      failed_when: false
+      when: googler_env_files_to_modify | length > 0
+
+  # Conditions for starting basic tasks: Googler is not installed at the
+  # desired/default googler_prefix_dir directory path, or the installed
+  # and desired versions do not match, or a force upgrade to the latest version
+  # is defined (in which case the desired version should not be determined).
+  when: >
+    googler_curr_ver.rc !=0
+    or (googler_desired_ver is defined
+    and googler_current_ver is
+    version(googler_desired_ver, '!=', version_type='strict'))
+    or (update_apps is defined
+    and ('all' in update_apps or 'googler' in update_apps | lower))
